@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import APIRouter, FastAPI, Query, HTTPException, File, UploadFile
+import re
 from pydantic import BaseModel
 from typing import Optional
 
 app = FastAPI()
+router = APIRouter(prefix="/api/v1")
 
 
 mahasiswa_db = [] # TODO real database later
@@ -35,13 +37,13 @@ class MahasiswaCreate(BaseModel):
     nama: str
     program_studi: str
 
-@app.get("/mahasiswa")
+@router.get("/mahasiswa")
 def get_mahasiswa(page: int = Query(1), per_page: int = Query(10)):
     start = (page - 1) * per_page
     end = start + per_page
     return {"data": mahasiswa_db[start:end]}
-
-@app.post("/mahasiswa")
+    
+@router.post("/mahasiswa")
 def create_mahasiswa(body: MahasiswaCreate):
     mahasiswa = {
         "id": len(mahasiswa_db) + 1,
@@ -55,13 +57,12 @@ def create_mahasiswa(body: MahasiswaCreate):
 
 #dashboard.py
 
-@app.get("/mahasiswa/{mahasiswa_id}/ipk")
+@router.get("/mahasiswa/{mahasiswa_id}/ipk")
 def get_ipk(mahasiswa_id: int):
     mahasiswa = next((m for m in mahasiswa_db if m["id"] == mahasiswa_id), None)
     if not mahasiswa:
         raise HTTPException(status_code=404, detail="Mahasiswa tidak ditemukan")
     
-    # Calculate IPK from semesters
     sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
     all_mk = []
     for s in sems:
@@ -79,7 +80,7 @@ def get_ipk(mahasiswa_id: int):
     }
 
 
-@app.get("/mahasiswa/{mahasiswa_id}/tren")
+@router.get("/mahasiswa/{mahasiswa_id}/tren")
 def get_tren(mahasiswa_id: int):
     sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
     tren = []
@@ -97,12 +98,12 @@ def get_tren(mahasiswa_id: int):
     return {"tren": tren}
 
 
-@app.get("/semester/{semester_id}/mata-kuliah")
+@router.get("/semester/{semester_id}/mata-kuliah")
 def get_matakuliah(semester_id: int):
     mk_list = [mk for mk in matakuliah_db if mk["semester_id"] == semester_id]
     return {"data": mk_list}
 
-@app.get("/")
+@router.get("/")
 def root():
     return {"status": "ok"}
 
@@ -121,14 +122,14 @@ class MataKuliahCreate(BaseModel):
 
 # Semester ---
 
-@app.get("/mahasiswa/{mahasiswa_id}/semester")
+@router.get("/mahasiswa/{mahasiswa_id}/semester")
 def get_semesters(mahasiswa_id: int, page: int = Query(1), per_page: int = Query(50)):
     sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
     start = (page - 1) * per_page
     return {"data": sems[start:start + per_page]}
 
 
-@app.post("/mahasiswa/{mahasiswa_id}/semester")
+@router.post("/mahasiswa/{mahasiswa_id}/semester")
 def create_semester(mahasiswa_id: int, body: SemesterCreate):
 
     duplicate = any(
@@ -150,7 +151,7 @@ def create_semester(mahasiswa_id: int, body: SemesterCreate):
     return sem
 
 
-@app.delete("/semester/{semester_id}")
+@router.delete("/semester/{semester_id}")
 def delete_semester(semester_id: int):
     global semester_db, matakuliah_db
     sem = next((s for s in semester_db if s["id"] == semester_id), None)
@@ -161,7 +162,7 @@ def delete_semester(semester_id: int):
     return {"detail": "Semester berhasil dihapus."}
 
 
-@app.get("/semester/{semester_id}/ips")
+@router.get("/semester/{semester_id}/ips")
 def get_ips(semester_id: int):
     sem = next((s for s in semester_db if s["id"] == semester_id), None)
     if not sem:
@@ -177,7 +178,7 @@ def get_ips(semester_id: int):
 
 # --- matkul
 
-@app.post("/semester/{semester_id}/mata-kuliah")
+@router.post("/semester/{semester_id}/mata-kuliah")
 def create_matakuliah(semester_id: int, body: MataKuliahCreate):
     sem = next((s for s in semester_db if s["id"] == semester_id), None)
     if not sem:
@@ -204,7 +205,7 @@ def create_matakuliah(semester_id: int, body: MataKuliahCreate):
     return mk
 
 
-@app.delete("/mata-kuliah/{mk_id}")
+@router.delete("/mata-kuliah/{mk_id}")
 def delete_matakuliah(mk_id: int):
     global matakuliah_db
     mk = next((m for m in matakuliah_db if m["id"] == mk_id), None)
@@ -222,7 +223,7 @@ class SimulasiRequest(BaseModel):
     sisa_sks: int
 
 
-@app.post("/simulasi/target-ipk")
+@router.post("/simulasi/target-ipk")
 def simulasi_target_ipk(body: SimulasiRequest):
     total_sks_akhir = body.total_sks_ditempuh + body.sisa_sks
     ips_minimum = (
@@ -235,3 +236,57 @@ def simulasi_target_ipk(body: SimulasiRequest):
         "tercapai": ips_minimum <= 4.0,
         "sisa_sks": body.sisa_sks,
     }
+
+#import_frs.py (pdfplumber)
+
+@router.post("/semester/{semester_id}/import-frs")
+async def import_frs(semester_id: int, file: UploadFile = File(...)):
+    sem = next((s for s in semester_db if s["id"] == semester_id), None)
+    if not sem:
+        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+
+    content = await file.read()
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File harus berformat PDF.")
+
+    # TODO: Parse PDF
+
+    berhasil = 0
+    gagal = 0
+    detail_gagal = []
+
+    for i, match in enumerate(pattern.finditer(text), start=1):
+        kode, nama, sks, nilai = match.groups()
+        nilai_huruf = None if nilai == "-" else nilai
+
+        # Skip duplicates
+        duplicate = any(
+            mk["semester_id"] == semester_id and mk["kode_mk"] == kode
+            for mk in matakuliah_db
+        )
+        if duplicate:
+            gagal += 1
+            detail_gagal.append({"baris": i, "alasan": f"Kode '{kode}' sudah ada."})
+            continue
+
+        bobot = GRADE_POINTS.get(nilai_huruf) if nilai_huruf else None
+        matakuliah_db.append({
+            "id": len(matakuliah_db) + 1,
+            "semester_id": semester_id,
+            "kode_mk": kode,
+            "nama_mk": nama.strip(),
+            "sks": int(sks),
+            "nilai_huruf": nilai_huruf,
+            "nilai_bobot": bobot,
+        })
+        berhasil += 1
+
+    if berhasil == 0 and gagal == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini."
+        )
+
+    return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
+
+app.include_router(router)

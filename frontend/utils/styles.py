@@ -379,19 +379,7 @@ footer {visibility: hidden;}
 [data-testid="stDecoration"] {display: none;}
 [data-testid="stStatusWidget"] {visibility: hidden;}
 [data-testid="collapsedControl"] {
-    visibility: visible !important;
-    display: flex !important;
-}
-
-[data-testid="stSidebar"][aria-expanded="false"] {
-    margin-left: 0 !important;
-    transform: none !important;
-    min-width: 15rem !important;
-    width: 15rem !important;
-}
-
-[data-testid="stSidebar"][aria-expanded="false"] > div:first-child {
-    width: 15rem !important;
+    display: none !important;
 }
 </style>
 """

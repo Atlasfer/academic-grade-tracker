@@ -99,7 +99,7 @@ def render_sidebar():
                 st.session_state.current_page = "Kalkulator"
                 st.session_state.focus_add_mk = True
                 st.rerun()
-            if st.button("🚪  Logout", use_container_width=True, key="nav_logout"):
+            if st.button("Logout", use_container_width=True, key="nav_logout"):
                 logout()
                 st.session_state.current_page = "Profil"
                 st.rerun()

@@ -1,46 +1,55 @@
-from fastapi import APIRouter, HTTPException, File, UploadFile
-from database import semester_db, matakuliah_db, GRADE_POINTS, hitung_ips
+from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
+from sqlalchemy.orm import Session
+from database import get_db, Semester, MataKuliah, GRADE_POINTS, hitung_ips
+import pdfplumber
 import re
 import io
 
 router = APIRouter(prefix="/api/v1", tags=["Semester"])
 
 
+# - main route
+
 @router.delete("/semester/{semester_id}")
-def delete_semester(semester_id: int):
-    global semester_db, matakuliah_db
-    if not any(s["id"] == semester_id for s in semester_db):
+def delete_semester(semester_id: int, db: Session = Depends(get_db)):
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
         raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
-    semester_db[:] = [s for s in semester_db if s["id"] != semester_id]
-    matakuliah_db[:] = [mk for mk in matakuliah_db if mk["semester_id"] != semester_id]
+    db.delete(sem)
+    db.commit()
     return {"detail": "Semester berhasil dihapus."}
 
 
 @router.get("/semester/{semester_id}/ips")
-def get_ips(semester_id: int):
-    if not any(s["id"] == semester_id for s in semester_db):
+def get_ips(semester_id: int, db: Session = Depends(get_db)):
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
         raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
-    mk_list = [mk for mk in matakuliah_db if mk["semester_id"] == semester_id]
+    mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == semester_id).all()
     ips, total_sks = hitung_ips(mk_list)
-    return {"ips": ips, "total_sks_semester": total_sks, "mata_kuliah": mk_list}
+    return {
+        "ips": ips,
+        "total_sks_semester": total_sks,
+        "mata_kuliah": [_fmt_mk(mk) for mk in mk_list],
+    }
 
 
 @router.get("/semester/{semester_id}/mata-kuliah")
-def get_matakuliah(semester_id: int):
-    mk_list = [mk for mk in matakuliah_db if mk["semester_id"] == semester_id]
-    return {"data": mk_list}
+def get_matakuliah(semester_id: int, db: Session = Depends(get_db)):
+    mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == semester_id).all()
+    return {"data": [_fmt_mk(mk) for mk in mk_list]}
 
 
 @router.post("/semester/{semester_id}/import-frs")
-async def import_frs(semester_id: int, file: UploadFile = File(...)):
-    if not any(s["id"] == semester_id for s in semester_db):
+async def import_frs(semester_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
         raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File harus berformat PDF.")
 
     content = await file.read()
     try:
-        import pdfplumber
         text = ""
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
@@ -48,35 +57,175 @@ async def import_frs(semester_id: int, file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Gagal membaca PDF: {str(e)}")
 
+    is_transcript = "TRANSKRIP" in text.upper() or "TRANSCRIPT" in text.upper()
+
+    if is_transcript:
+        return _parse_transcript(text, sem.mahasiswa_id, db)
+    else:
+        return _parse_frs(text, semester_id, sem.mahasiswa_id, db)
+
+
+# --- utils
+
+def _get_anchor_year(mahasiswa_id: int, db: Session, fallback_nrp: str = None) -> int:
+    """
+    Get entrance year to anchor semester numbering.
+    Priority: earliest existing semester in DB → NRP → 2024
+    """
+    existing = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id
+    ).order_by(Semester.tahun_ajaran.asc()).first()
+
+    if existing:
+        return int(existing.tahun_ajaran.split("/")[0])
+
+    if fallback_nrp and len(fallback_nrp) >= 8:
+        return 2000 + int(fallback_nrp[4:6])
+
+    return 2024
+
+
+def _sem_num_to_tahun_ajaran(sem_num: int, entrance_year: int) -> tuple[str, str]:
+    """Convert semester number (1-based) to tahun_ajaran and jenis."""
+    year_offset = (sem_num - 1) // 2
+    tahun_mulai = entrance_year + year_offset
+    jenis = "GANJIL" if sem_num % 2 == 1 else "GENAP"
+    return f"{tahun_mulai}/{tahun_mulai + 1}", jenis
+
+
+def _get_or_create_semester(mahasiswa_id: int, tahun_ajaran: str, jenis: str, db: Session) -> Semester:
+    """Fetch existing semester or create it."""
+    sem = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id,
+        Semester.tahun_ajaran == tahun_ajaran,
+        Semester.semester == jenis,
+    ).first()
+    if not sem:
+        sem = Semester(mahasiswa_id=mahasiswa_id, tahun_ajaran=tahun_ajaran, semester=jenis)
+        db.add(sem)
+        db.flush()
+    return sem
+
+
+def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> dict:
+    """FRS format: NO  KODE  NAMA MK  SKS  KELAS"""
     pattern = re.compile(
-        r"([A-Z]{2}\d{4})\s+(.+?)\s+(\d)\s+([A-E]{1,2}|-)\s*$",
+        r"^\s*\d+\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+[A-Z]\s*$",
         re.MULTILINE
     )
+
+    # Extract NRP for entrance year
+    nrp_match = re.search(r"\b(\d{10})\b", text)
+    nrp = nrp_match.group(1) if nrp_match else None
+
+    # Extract semester header from FRS (e.g. "Genap 2025")
+    sem_header = re.search(r"(Ganjil|Genap|Pendek)\s+(\d{4})", text, re.IGNORECASE)
+    if sem_header:
+        jenis_raw, tahun_mulai = sem_header.groups()
+        jenis = jenis_raw.upper()
+        tahun_mulai = int(tahun_mulai)
+        tahun_ajaran = f"{tahun_mulai}/{tahun_mulai + 1}"
+        entrance_year = _get_anchor_year(mahasiswa_id, db, fallback_nrp=nrp)
+        target_sem = _get_or_create_semester(mahasiswa_id, tahun_ajaran, jenis, db)
+        semester_id = target_sem.id
+
     berhasil, gagal, detail_gagal = 0, 0, []
 
     for i, match in enumerate(pattern.finditer(text), start=1):
-        kode, nama, sks, nilai = match.groups()
-        nilai_huruf = None if nilai == "-" else nilai
-
-        if any(mk["semester_id"] == semester_id and mk["kode_mk"] == kode for mk in matakuliah_db):
+        kode, nama, sks = match.groups()
+        duplicate = db.query(MataKuliah).filter(
+            MataKuliah.semester_id == semester_id,
+            MataKuliah.kode_mk == kode,
+        ).first()
+        if duplicate:
             gagal += 1
             detail_gagal.append({"baris": i, "alasan": f"Kode '{kode}' sudah ada."})
             continue
 
-        matakuliah_db.append({
-            "id": len(matakuliah_db) + 1,
-            "semester_id": semester_id,
-            "kode_mk": kode,
-            "nama_mk": nama.strip(),
-            "sks": int(sks),
-            "nilai_huruf": nilai_huruf,
-            "nilai_bobot": GRADE_POINTS.get(nilai_huruf) if nilai_huruf else None,
-        })
+        db.add(MataKuliah(
+            semester_id=semester_id,
+            kode_mk=kode,
+            nama_mk=nama.strip(),
+            sks=int(sks),
+            nilai_huruf=None,
+            nilai_bobot=None,
+        ))
         berhasil += 1
 
     if berhasil == 0 and gagal == 0:
-        raise HTTPException(
-            status_code=422,
-            detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini."
-        )
+        raise HTTPException(status_code=422, detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini.")
+
+    db.commit()
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
+
+
+def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
+    """Transcript format: NO  KODE  NAMA MK  SEM  SKS  NILAI"""
+    pattern = re.compile(
+    r"^\s*(\d+)\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+(\d+)\s+(A|AB|B|BC|C|D|E)(?:\s|$)",
+    re.MULTILINE
+    )
+    # Temporary debug — remove after testing
+    print(text)
+    # Extract NRP for entrance year
+    nrp_match = re.search(r"\b(\d{10})\b", text)
+    nrp = nrp_match.group(1) if nrp_match else None
+    entrance_year = _get_anchor_year(mahasiswa_id, db, fallback_nrp=nrp)
+
+    # Group courses by semester number
+    sem_map: dict[int, list] = {}
+    for i, match in enumerate(pattern.finditer(text), start=1):
+        _, kode, nama, sem_num, sks, nilai = match.groups()  # note the leading _ for row number
+        sem_map.setdefault(int(sem_num), []).append({
+            "kode": kode,
+            "nama": nama.strip(),
+            "sks": int(sks),
+            "nilai": nilai,
+            "baris": i,
+    })
+
+    if not sem_map:
+        raise HTTPException(status_code=422, detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini.")
+
+    berhasil, gagal, detail_gagal = 0, 0, []
+
+    for sem_num, courses in sorted(sem_map.items()):
+        tahun_ajaran, jenis = _sem_num_to_tahun_ajaran(sem_num, entrance_year)
+        sem = _get_or_create_semester(mahasiswa_id, tahun_ajaran, jenis, db)
+
+        for course in courses:
+            duplicate = db.query(MataKuliah).filter(
+                MataKuliah.semester_id == sem.id,
+                MataKuliah.kode_mk == course["kode"],
+            ).first()
+            if duplicate:
+                gagal += 1
+                detail_gagal.append({"baris": course["baris"], "alasan": f"Kode '{course['kode']}' sudah ada."})
+                continue
+
+            db.add(MataKuliah(
+                semester_id=sem.id,
+                kode_mk=course["kode"],
+                nama_mk=course["nama"],
+                sks=course["sks"],
+                nilai_huruf=course["nilai"],
+                nilai_bobot=GRADE_POINTS.get(course["nilai"]),
+            ))
+            berhasil += 1
+
+    db.commit()
+    return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
+
+
+# --- Formatter ---
+
+def _fmt_mk(mk: MataKuliah) -> dict:
+    return {
+        "id": mk.id,
+        "semester_id": mk.semester_id,
+        "kode_mk": mk.kode_mk,
+        "nama_mk": mk.nama_mk,
+        "sks": mk.sks,
+        "nilai_huruf": mk.nilai_huruf,
+        "nilai_bobot": mk.nilai_bobot,
+    }

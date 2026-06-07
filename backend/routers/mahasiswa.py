@@ -1,59 +1,63 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from sqlalchemy.orm import Session
+from database import get_db, Mahasiswa, Semester, MataKuliah, hitung_ips
 from models import MahasiswaCreate, SemesterCreate
-from database import mahasiswa_db, semester_db, matakuliah_db, hitung_ips
 
 router = APIRouter(prefix="/api/v1", tags=["Mahasiswa"])
 
 
 @router.get("/mahasiswa")
-def get_mahasiswa(page: int = Query(1), per_page: int = Query(10)):
-    start = (page - 1) * per_page
-    return {"data": mahasiswa_db[start:start + per_page]}
+def get_mahasiswa(page: int = Query(1), per_page: int = Query(10), db: Session = Depends(get_db)):
+    offset = (page - 1) * per_page
+    rows = db.query(Mahasiswa).offset(offset).limit(per_page).all()
+    return {"data": [_fmt_mahasiswa(m) for m in rows]}
 
 
 @router.post("/mahasiswa", status_code=201)
-def create_mahasiswa(body: MahasiswaCreate):
-    mahasiswa = {
-        "id": len(mahasiswa_db) + 1,
-        "nim": body.nim,
-        "nama": body.nama,
-        "program_studi": body.program_studi,
-        "total_sks_lulus": 0,
-    }
-    mahasiswa_db.append(mahasiswa)
-    return mahasiswa
+def create_mahasiswa(body: MahasiswaCreate, db: Session = Depends(get_db)):
+    mahasiswa = Mahasiswa(
+        nim=body.nim,
+        nama=body.nama,
+        program_studi=body.program_studi,
+        total_sks_lulus=0,
+    )
+    db.add(mahasiswa)
+    db.commit()
+    db.refresh(mahasiswa)
+    return _fmt_mahasiswa(mahasiswa)
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/ipk")
-def get_ipk(mahasiswa_id: int):
-    mahasiswa = next((m for m in mahasiswa_db if m["id"] == mahasiswa_id), None)
+def get_ipk(mahasiswa_id: int, db: Session = Depends(get_db)):
+    mahasiswa = db.query(Mahasiswa).filter(Mahasiswa.id == mahasiswa_id).first()
     if not mahasiswa:
         raise HTTPException(status_code=404, detail="Mahasiswa tidak ditemukan.")
 
-    sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
+    sems = db.query(Semester).filter(Semester.mahasiswa_id == mahasiswa_id).all()
     cumulative_mk = []
+    sem_list = []
     for s in sems:
-        mk_list = [mk for mk in matakuliah_db if mk["semester_id"] == s["id"]]
+        mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == s.id).all()
         ips, _ = hitung_ips(mk_list)
-        s["ips"] = ips
         cumulative_mk.extend(mk_list)
+        sem_list.append({**_fmt_semester(s), "ips": ips})
 
     ipk, total_sks = hitung_ips(cumulative_mk)
-    return {"ipk": ipk, "total_sks_kumulatif": total_sks, "semester": sems}
+    return {"ipk": ipk, "total_sks_kumulatif": total_sks, "semester": sem_list}
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/tren")
-def get_tren(mahasiswa_id: int):
-    sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
+def get_tren(mahasiswa_id: int, db: Session = Depends(get_db)):
+    sems = db.query(Semester).filter(Semester.mahasiswa_id == mahasiswa_id).all()
     tren = []
     cumulative_mk = []
     for s in sems:
-        mk_list = [mk for mk in matakuliah_db if mk["semester_id"] == s["id"]]
+        mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == s.id).all()
         ips, _ = hitung_ips(mk_list)
         cumulative_mk.extend(mk_list)
         ipk_kumulatif, _ = hitung_ips(cumulative_mk)
         tren.append({
-            "label": f"{s['tahun_ajaran']} {s['semester']}",
+            "label": f"{s.tahun_ajaran} {s.semester}",
             "ips": ips,
             "ipk_kumulatif": ipk_kumulatif,
         })
@@ -61,28 +65,44 @@ def get_tren(mahasiswa_id: int):
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/semester")
-def get_semesters(mahasiswa_id: int, page: int = Query(1), per_page: int = Query(50)):
-    sems = [s for s in semester_db if s["mahasiswa_id"] == mahasiswa_id]
-    start = (page - 1) * per_page
-    return {"data": sems[start:start + per_page]}
+def get_semesters(mahasiswa_id: int, page: int = Query(1), per_page: int = Query(50), db: Session = Depends(get_db)):
+    offset = (page - 1) * per_page
+    sems = db.query(Semester).filter(Semester.mahasiswa_id == mahasiswa_id).offset(offset).limit(per_page).all()
+    return {"data": [_fmt_semester(s) for s in sems]}
 
 
 @router.post("/mahasiswa/{mahasiswa_id}/semester", status_code=201)
-def create_semester(mahasiswa_id: int, body: SemesterCreate):
-    duplicate = any(
-        s["mahasiswa_id"] == mahasiswa_id
-        and s["tahun_ajaran"] == body.tahun_ajaran
-        and s["semester"] == body.semester
-        for s in semester_db
-    )
+def create_semester(mahasiswa_id: int, body: SemesterCreate, db: Session = Depends(get_db)):
+    duplicate = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id,
+        Semester.tahun_ajaran == body.tahun_ajaran,
+        Semester.semester == body.semester,
+    ).first()
     if duplicate:
         raise HTTPException(status_code=409, detail="Semester sudah ada.")
-    sem = {
-        "id": len(semester_db) + 1,
-        "mahasiswa_id": mahasiswa_id,
-        "tahun_ajaran": body.tahun_ajaran,
-        "semester": body.semester,
-        "ips": None,
+
+    sem = Semester(mahasiswa_id=mahasiswa_id, tahun_ajaran=body.tahun_ajaran, semester=body.semester)
+    db.add(sem)
+    db.commit()
+    db.refresh(sem)
+    return _fmt_semester(sem)
+
+
+# --- forrmating
+
+def _fmt_mahasiswa(m: Mahasiswa) -> dict:
+    return {
+        "id": m.id,
+        "nim": m.nim,
+        "nama": m.nama,
+        "program_studi": m.program_studi,
+        "total_sks_lulus": m.total_sks_lulus,
     }
-    semester_db.append(sem)
-    return sem
+
+def _fmt_semester(s: Semester) -> dict:
+    return {
+        "id": s.id,
+        "mahasiswa_id": s.mahasiswa_id,
+        "tahun_ajaran": s.tahun_ajaran,
+        "semester": s.semester,
+    }

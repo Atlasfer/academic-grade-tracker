@@ -378,7 +378,10 @@ footer {visibility: hidden;}
 [data-testid="stToolbar"] {visibility: hidden;}
 [data-testid="stDecoration"] {display: none;}
 [data-testid="stStatusWidget"] {visibility: hidden;}
-[data-testid="collapsedControl"] {
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+button[kind="headerNoPadding"],
+[data-testid="stSidebar"] [data-testid="baseButton-headerNoPadding"] {
     display: none !important;
 }
 </style>

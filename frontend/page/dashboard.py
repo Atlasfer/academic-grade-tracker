@@ -103,7 +103,7 @@ def render():
                        tickfont=dict(size=11)),
             font=dict(family="Inter, sans-serif"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     else:
         st.info("Belum ada data tren. Tambahkan semester dan mata kuliah untuk melihat grafik.")
 

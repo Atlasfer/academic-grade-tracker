@@ -22,6 +22,20 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 # Inisialisasi session state
 init_state()
 
+if not st.session_state.get("token"):
+    token_from_url = st.query_params.get("token")
+    if token_from_url:
+        st.session_state.token = token_from_url
+        try:
+            from utils import api_client
+            from utils.state import set_mahasiswa
+            result = api_client.get("/mahasiswa", params={"page": 1, "per_page": 1})
+            data_list = result.get("data", []) if result else []
+            if data_list:
+                set_mahasiswa(data_list[0])
+        except Exception as e:
+            pass
+
 # Sidebar
 if is_logged_in():
     render_sidebar()

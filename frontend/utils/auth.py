@@ -3,6 +3,7 @@ import streamlit as st
 
 def save_token(token: str):
     st.session_state.token = token
+    st.query_params["token"] = token
 
 
 def get_token() -> str | None:
@@ -11,6 +12,7 @@ def get_token() -> str | None:
 
 def logout():
     st.session_state.token = None
+    st.query_params.clear()
     st.session_state.mahasiswa_id = None
     st.session_state.mahasiswa_nim = ""
     st.session_state.mahasiswa_nama = ""

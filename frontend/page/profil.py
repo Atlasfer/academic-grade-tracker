@@ -14,14 +14,16 @@ def render():
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
+
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        tab_login, tab_register = st.tabs(["Masuk", "Daftar"])
+
+        with tab_login:
+            _form_login()
+        with tab_register:
+            _form_register()
  
-    tab_login, tab_register = st.tabs(["Masuk", "Daftar"])
- 
-    with tab_login:
-        _form_login()
- 
-    with tab_register:
-        _form_register()
     
 def _form_login():
     with st.form("form_login"):

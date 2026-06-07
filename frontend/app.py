@@ -22,11 +22,12 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 # Inisialisasi session state
 init_state()
 
+# Sidebar
+if is_logged_in():
+    render_sidebar()
+
 # Router halaman
-render_sidebar()
-
 current_page = st.session_state.get("current_page", "Dashboard")
-
 if not is_logged_in():
     profil.render()
 else:

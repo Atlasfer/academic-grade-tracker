@@ -11,6 +11,7 @@ def init_state():
         "mahasiswa_total_sks": 0,
         "semester_aktif_id": None,
         "semester_aktif_label": "",
+        "sidebar_visible": True,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -35,6 +36,7 @@ def clear_mahasiswa():
     st.session_state.mahasiswa_total_sks = 0
     st.session_state.semester_aktif_id = None
     st.session_state.semester_aktif_label = ""
+    st.session_state.sidebar_visible = True
 
 
 def is_logged_in() -> bool:

@@ -5,14 +5,14 @@ import os
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL") 
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 
-# --- orm model
+# Model
 
 class Mahasiswa(Base):
     __tablename__ = "mahasiswa"
@@ -22,6 +22,7 @@ class Mahasiswa(Base):
     nama            = Column(String(200), nullable=False)
     program_studi   = Column(String(100), nullable=False)
     total_sks_lulus = Column(Integer, default=0)
+    password_hash   = Column(String(255), nullable=False)
 
     semesters = relationship("Semester", back_populates="mahasiswa", cascade="all, delete")
 
@@ -51,8 +52,8 @@ class MataKuliah(Base):
 
     semester = relationship("Semester", back_populates="mata_kuliah")
 
-#----utils
 
+# utils
 
 GRADE_POINTS: dict = {
     "A": 4.0, "AB": 3.5, "B": 3.0,

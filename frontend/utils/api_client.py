@@ -1,11 +1,17 @@
 import os
 import requests
 from typing import Any
+from utils.auth import get_token
 
 BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 
+def _headers() -> dict:
+    token = get_token()
+    if token:
+        return {"Authorization": f"Bearer {token}"} if token else {}
+    return {}
+
 def _handle_response(response: requests.Response) -> dict | list | None:
-    """Parse response dan raise exception dengan pesan yang jelas jika error."""
     if response.status_code == 204:
         return None
     try:

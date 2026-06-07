@@ -1,16 +1,20 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from database import get_db, Semester, MataKuliah, GRADE_POINTS
+from database import get_db, Mahasiswa, Semester, MataKuliah, GRADE_POINTS
 from models import MataKuliahCreate
+from dependencies import get_current_user
 
 router = APIRouter(prefix="/api/v1", tags=["Mata Kuliah"])
 
 
 @router.post("/semester/{semester_id}/mata-kuliah", status_code=201)
-def create_matakuliah(semester_id: int, body: MataKuliahCreate, db: Session = Depends(get_db)):
-    sem = db.query(Semester).filter(Semester.id == semester_id).first()
-    if not sem:
-        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+def create_matakuliah(
+    semester_id: int,
+    body: MataKuliahCreate,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    sem = _get_semester_owned(semester_id, current_user, db)
 
     duplicate = db.query(MataKuliah).filter(
         MataKuliah.semester_id == semester_id,
@@ -30,6 +34,36 @@ def create_matakuliah(semester_id: int, body: MataKuliahCreate, db: Session = De
     db.add(mk)
     db.commit()
     db.refresh(mk)
+    return _fmt_mk(mk)
+
+
+@router.delete("/mata-kuliah/{mk_id}")
+def delete_matakuliah(
+    mk_id: int,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    mk = db.query(MataKuliah).filter(MataKuliah.id == mk_id).first()
+    if not mk:
+        raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan.")
+    _get_semester_owned(mk.semester_id, current_user, db)
+    db.delete(mk)
+    db.commit()
+    return {"detail": "Mata kuliah berhasil dihapus."}
+
+
+# utis
+
+def _get_semester_owned(semester_id: int, current_user: Mahasiswa, db: Session) -> Semester:
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
+        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+    if sem.mahasiswa_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Akses ditolak.")
+    return sem
+
+
+def _fmt_mk(mk: MataKuliah) -> dict:
     return {
         "id": mk.id,
         "semester_id": mk.semester_id,
@@ -39,13 +73,3 @@ def create_matakuliah(semester_id: int, body: MataKuliahCreate, db: Session = De
         "nilai_huruf": mk.nilai_huruf,
         "nilai_bobot": mk.nilai_bobot,
     }
-
-
-@router.delete("/mata-kuliah/{mk_id}")
-def delete_matakuliah(mk_id: int, db: Session = Depends(get_db)):
-    mk = db.query(MataKuliah).filter(MataKuliah.id == mk_id).first()
-    if not mk:
-        raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan.")
-    db.delete(mk)
-    db.commit()
-    return {"detail": "Mata kuliah berhasil dihapus."}

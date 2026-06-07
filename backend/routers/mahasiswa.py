@@ -2,19 +2,29 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
 from database import get_db, Mahasiswa, Semester, MataKuliah, hitung_ips
 from models import MahasiswaCreate, SemesterCreate
+from dependencies import get_current_user
 
 router = APIRouter(prefix="/api/v1", tags=["Mahasiswa"])
 
 
 @router.get("/mahasiswa")
-def get_mahasiswa(page: int = Query(1), per_page: int = Query(10), db: Session = Depends(get_db)):
+def get_mahasiswa(
+    page: int = Query(1), 
+    per_page: int = Query(10),
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user)
+):
     offset = (page - 1) * per_page
     rows = db.query(Mahasiswa).offset(offset).limit(per_page).all()
     return {"data": [_fmt_mahasiswa(m) for m in rows]}
 
 
 @router.post("/mahasiswa", status_code=201)
-def create_mahasiswa(body: MahasiswaCreate, db: Session = Depends(get_db)):
+def create_mahasiswa(
+    body: MahasiswaCreate, 
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
     mahasiswa = Mahasiswa(
         nim=body.nim,
         nama=body.nama,
@@ -28,7 +38,13 @@ def create_mahasiswa(body: MahasiswaCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/ipk")
-def get_ipk(mahasiswa_id: int, db: Session = Depends(get_db)):
+def get_ipk(
+    mahasiswa_id: int, 
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user)
+):
+    _check_ownership(mahasiswa_id, current_user)
+
     mahasiswa = db.query(Mahasiswa).filter(Mahasiswa.id == mahasiswa_id).first()
     if not mahasiswa:
         raise HTTPException(status_code=404, detail="Mahasiswa tidak ditemukan.")
@@ -47,7 +63,13 @@ def get_ipk(mahasiswa_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/tren")
-def get_tren(mahasiswa_id: int, db: Session = Depends(get_db)):
+def get_tren(
+    mahasiswa_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: Mahasiswa = Depends(get_current_user)
+):
+    _check_ownership(mahasiswa_id, current_user)
+
     sems = db.query(Semester).filter(Semester.mahasiswa_id == mahasiswa_id).all()
     tren = []
     cumulative_mk = []
@@ -65,14 +87,27 @@ def get_tren(mahasiswa_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/mahasiswa/{mahasiswa_id}/semester")
-def get_semesters(mahasiswa_id: int, page: int = Query(1), per_page: int = Query(50), db: Session = Depends(get_db)):
+def get_semesters(
+    mahasiswa_id: int, 
+    page: int = Query(1), 
+    per_page: int = Query(50), 
+    db: Session = Depends(get_db), 
+    current_user: Mahasiswa = Depends(get_current_user)):
+    _check_ownership(mahasiswa_id, current_user)
+
     offset = (page - 1) * per_page
     sems = db.query(Semester).filter(Semester.mahasiswa_id == mahasiswa_id).offset(offset).limit(per_page).all()
     return {"data": [_fmt_semester(s) for s in sems]}
 
 
 @router.post("/mahasiswa/{mahasiswa_id}/semester", status_code=201)
-def create_semester(mahasiswa_id: int, body: SemesterCreate, db: Session = Depends(get_db)):
+def create_semester(
+    mahasiswa_id: int, 
+    body: SemesterCreate, 
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user)):
+    _check_ownership(mahasiswa_id, current_user)
+
     duplicate = db.query(Semester).filter(
         Semester.mahasiswa_id == mahasiswa_id,
         Semester.tahun_ajaran == body.tahun_ajaran,
@@ -89,6 +124,10 @@ def create_semester(mahasiswa_id: int, body: SemesterCreate, db: Session = Depen
 
 
 # --- forrmating
+
+def _check_ownership(mahasiswa_id: int, current_user: Mahasiswa):
+    if mahasiswa_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Akses ditolak.")
 
 def _fmt_mahasiswa(m: Mahasiswa) -> dict:
     return {

@@ -4,6 +4,7 @@ Komponen sidebar yang tampil di semua halaman.
 import streamlit as st
 from utils.state import is_logged_in
 from utils.helpers import format_ipk, h
+from utils.auth import logout
 
 
 def render_sidebar():
@@ -97,6 +98,10 @@ def render_sidebar():
             if st.button("➕  Tambah Mata Kuliah", use_container_width=True, key="nav_add_mk"):
                 st.session_state.current_page = "Kalkulator"
                 st.session_state.focus_add_mk = True
+                st.rerun()
+            if st.button("🚪  Logout", use_container_width=True, key="nav_logout"):
+                logout()
+                st.session_state.current_page = "Profil"
                 st.rerun()
 
         st.markdown("<div style='flex:1'></div>", unsafe_allow_html=True)

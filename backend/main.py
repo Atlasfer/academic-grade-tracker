@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from routers import mahasiswa, semester, matakuliah, simulasi
+from routers import mahasiswa, semester, matakuliah, simulasi, auth
 from fastapi.middleware.cors import CORSMiddleware
 from database import create_tables
 from contextlib import asynccontextmanager
@@ -11,7 +11,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Academic Grade Tracker API",
+    title="Academic Grade Tracker",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -23,6 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(mahasiswa.router)
 app.include_router(semester.router)
 app.include_router(matakuliah.router)

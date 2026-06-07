@@ -3,6 +3,7 @@ import streamlit as st
 def init_state():
     """Inisialisasi semua session state yang dibutuhkan."""
     defaults = {
+        "token": None,
         "mahasiswa_id": None,
         "mahasiswa_nim": "",
         "mahasiswa_nama": "",

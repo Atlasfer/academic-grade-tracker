@@ -1,5 +1,15 @@
 from pydantic import BaseModel
 
+class RegisterRequest(BaseModel):
+    nim: str
+    nama: str
+    program_studi: str
+    password: str
+
+class LoginRequest(BaseModel):
+    nim: str
+    password: str
+
 class MahasiswaCreate(BaseModel):
     nim: str
     nama: str
@@ -23,3 +33,4 @@ class SimulasiRequest(BaseModel):
     total_sks_ditempuh: int
     target_ipk: float
     sisa_sks: int
+

@@ -108,12 +108,8 @@ def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> d
         jenis = jenis_raw.upper()
         tahun = int(tahun_str)
 
-        # "Genap 2025" = second half of 2024/2025
-        # "Ganjil 2025" = first half of 2025/2026
-        if jenis == "GENAP":
-            tahun_ajaran = f"{tahun - 1}/{tahun}"
-        else:
-            tahun_ajaran = f"{tahun}/{tahun + 1}"
+        # Tahun ajaran == tahun yang di mention
+        tahun_ajaran = f"{tahun}/{tahun + 1}"
 
         # Block if existing semester already has graded courses
         existing = db.query(Semester).filter(

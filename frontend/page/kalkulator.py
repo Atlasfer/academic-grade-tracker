@@ -213,6 +213,7 @@ def _tabel_coursework(semester_id: str, mk_list: list, ips_val: float | None):
         st.info("Belum ada mata kuliah. Tambahkan di form kiri.")
         return
 
+    # Table header
     rows = [
         {
             "Kode MK": mk.get("kode_mk", ""),
@@ -254,11 +255,60 @@ def _tabel_coursework(semester_id: str, mk_list: list, ips_val: float | None):
         )
 
     st.markdown("<div style='margin-top:0.5rem;'></div>", unsafe_allow_html=True)
-    with st.expander("🗑️ Hapus mata kuliah", expanded=False):
+
+    # Edit & Delete expander
+    with st.expander("✏️ Edit / 🗑️ Hapus mata kuliah", expanded=False):
         for mk in mk_list:
+            mk_id = mk["id"]
             label_mk = f"{mk.get('kode_mk')} — {mk.get('nama_mk')}"
-            if st.button(f"Hapus: {label_mk}", key=f"del_mk_{mk['id']}"):
-                _hapus_mk(mk["id"])
+
+            col_label, col_edit, col_del = st.columns([6, 1, 1])
+            with col_label:
+                st.markdown(
+                    f"<div style='padding:0.4rem 0;font-size:0.88rem;color:#1e293b;'>{label_mk}</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_edit:
+                if st.button("✏️", key=f"btn_edit_{mk_id}", help="Edit"):
+                    st.session_state[f"editing_{mk_id}"] = not st.session_state.get(f"editing_{mk_id}", False)
+            with col_del:
+                if st.button("🗑️", key=f"btn_del_{mk_id}", help="Hapus"):
+                    _hapus_mk(mk_id)
+
+            # Inline edit form
+            if st.session_state.get(f"editing_{mk_id}", False):
+                with st.form(f"form_edit_{mk_id}"):
+                    st.markdown(f"**Edit: {label_mk}**")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        new_kode = st.text_input("Kode MK", value=mk.get("kode_mk", ""), max_chars=20)
+                        new_sks = st.selectbox(
+                            "SKS", SKS_LIST,
+                            index=SKS_LIST.index(mk.get("sks", 3)) if mk.get("sks", 3) in SKS_LIST else 2
+                        )
+                    with c2:
+                        new_nama = st.text_input("Nama MK", value=mk.get("nama_mk", ""), max_chars=200)
+                        nilai_options = ["(Belum ada nilai)"] + NILAI_HURUF_LIST
+                        current_nilai = mk.get("nilai_huruf") or "(Belum ada nilai)"
+                        nilai_idx = nilai_options.index(current_nilai) if current_nilai in nilai_options else 0
+                        new_nilai = st.selectbox("Nilai", nilai_options, index=nilai_idx)
+
+                    save = st.form_submit_button("💾 Simpan", type="primary")
+
+                if save:
+                    nilai_huruf = None if new_nilai == "(Belum ada nilai)" else new_nilai
+                    try:
+                        api_client.put(f"/mata-kuliah/{mk_id}", {
+                            "kode_mk": new_kode.strip(),
+                            "nama_mk": new_nama.strip(),
+                            "sks": new_sks,
+                            "nilai_huruf": nilai_huruf,
+                        })
+                        st.success(f"'{new_kode}' berhasil diperbarui!")
+                        st.session_state[f"editing_{mk_id}"] = False
+                        st.rerun()
+                    except APIError as e:
+                        st.error(f"Gagal: {e.message}")
 
 
 def _hapus_semester(semester_id: str):

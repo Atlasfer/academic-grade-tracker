@@ -34,3 +34,13 @@ class SimulasiRequest(BaseModel):
     target_ipk: float
     sisa_sks: int
 
+class SemesterUpdate(BaseModel):
+    tahun_ajaran: str
+    semester: str
+
+class MataKuliahUpdate(BaseModel):
+    kode_mk: str | None = None
+    nama_mk: str | None = None
+    sks: int | None = None
+    nilai_huruf: str | None = None
+

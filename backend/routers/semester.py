@@ -1,6 +1,14 @@
 from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
 from sqlalchemy.orm import Session
-from database import get_db, Semester, MataKuliah, GRADE_POINTS, hitung_ips
+
+from backend.dependencies import get_current_user
+from backend.models import SemesterUpdate
+
+from backend.routers.mahasiswa import _fmt_semester
+from backend.routers.matakuliah import _get_semester_owned
+
+from database import Mahasiswa, get_db, Semester, MataKuliah, GRADE_POINTS, hitung_ips
+
 import pdfplumber
 import re
 import io
@@ -64,14 +72,31 @@ async def import_frs(semester_id: int, file: UploadFile = File(...), db: Session
     else:
         return _parse_frs(text, semester_id, sem.mahasiswa_id, db)
 
+@router.put("/semester/{semester_id}")
+def update_semester(
+    semester_id: int,
+    body: SemesterUpdate,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    sem = _get_semester_owned(semester_id, current_user, db)
+    sem.tahun_ajaran = body.tahun_ajaran
+    sem.semester = body.semester
+    db.commit()
+    db.refresh(sem) 
+    return _fmt_semester(sem)
+
 
 # --- utils
 
 def _get_anchor_year(mahasiswa_id: int, db: Session, fallback_nrp: str = None) -> int:
     """
-    Get entrance year to anchor semester numbering.
-    Priority: earliest existing semester in DB → NRP → 2024
+    Always prefer NRP for entrance year — it's the most reliable source.
+    Fall back to earliest existing semester only if NRP is unavailable.
     """
+    if fallback_nrp and len(fallback_nrp) >= 8:
+        return 2000 + int(fallback_nrp[4:6])
+
     existing = db.query(Semester).filter(
         Semester.mahasiswa_id == mahasiswa_id
     ).order_by(Semester.tahun_ajaran.asc()).first()
@@ -79,11 +104,7 @@ def _get_anchor_year(mahasiswa_id: int, db: Session, fallback_nrp: str = None) -
     if existing:
         return int(existing.tahun_ajaran.split("/")[0])
 
-    if fallback_nrp and len(fallback_nrp) >= 8:
-        return 2000 + int(fallback_nrp[4:6])
-
     return 2024
-
 
 def _sem_num_to_tahun_ajaran(sem_num: int, entrance_year: int) -> tuple[str, str]:
     """Convert semester number (1-based) to tahun_ajaran and jenis."""
@@ -156,6 +177,7 @@ def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> d
         raise HTTPException(status_code=422, detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini.")
 
     db.commit()
+    _reorder_semesters(mahasiswa_id, db)
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
 
 
@@ -165,8 +187,6 @@ def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
     r"^\s*(\d+)\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+(\d+)\s+(A|AB|B|BC|C|D|E)(?:\s|$)",
     re.MULTILINE
     )
-    # Temporary debug — remove after testing
-    print(text)
     # Extract NRP for entrance year
     nrp_match = re.search(r"\b(\d{10})\b", text)
     nrp = nrp_match.group(1) if nrp_match else None
@@ -214,7 +234,31 @@ def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
             berhasil += 1
 
     db.commit()
+    _reorder_semesters(mahasiswa_id, db)
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
+
+def _reorder_semesters(mahasiswa_id: int, db: Session):
+    """
+    After import, re-derive tahun_ajaran for all semesters based on their
+    relative order, anchored to the earliest one. This fixes any ordering
+    inconsistencies caused by out-of-order imports.
+    """
+    sems = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id
+    ).order_by(Semester.tahun_ajaran.asc(), Semester.semester.asc()).all()
+
+    if not sems:
+        return
+
+    # Use the anchor year from the first semester
+    anchor_year = int(sems[0].tahun_ajaran.split("/")[0])
+
+    for i, sem in enumerate(sems):
+        tahun_ajaran, jenis = _sem_num_to_tahun_ajaran(i + 1, anchor_year)
+        sem.tahun_ajaran = tahun_ajaran
+        sem.semester = jenis
+
+    db.commit()
 
 
 # --- Formatter ---

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from database import get_db, Mahasiswa, Semester, MataKuliah, GRADE_POINTS
-from models import MataKuliahCreate
+from models import MataKuliahCreate, MataKuliahUpdate
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/api/v1", tags=["Mata Kuliah"])
@@ -50,6 +50,35 @@ def delete_matakuliah(
     db.delete(mk)
     db.commit()
     return {"detail": "Mata kuliah berhasil dihapus."}
+
+@router.put("/mata-kuliah/{mk_id}")
+def update_matakuliah(
+    mk_id: int,
+    body: MataKuliahUpdate,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    mk = db.query(MataKuliah).filter(MataKuliah.id == mk_id).first()
+    if not mk:
+        raise HTTPException(status_code=404, detail="Mata kuliah tidak ditemukan.")
+    _get_semester_owned(mk.semester_id, current_user, db)
+
+    if body.kode_mk is not None:
+        mk.kode_mk = body.kode_mk
+    if body.nama_mk is not None:
+        mk.nama_mk = body.nama_mk
+    if body.sks is not None:
+        mk.sks = body.sks
+    if body.nilai_huruf is not None:
+        mk.nilai_huruf = body.nilai_huruf
+        mk.nilai_bobot = GRADE_POINTS.get(body.nilai_huruf)
+    elif body.nilai_huruf == "":
+        mk.nilai_huruf = None
+        mk.nilai_bobot = None
+
+    db.commit()
+    db.refresh(mk)
+    return _fmt_mk(mk)
 
 
 # utis

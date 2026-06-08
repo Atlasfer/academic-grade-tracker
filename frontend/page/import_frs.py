@@ -15,12 +15,26 @@ def render():
         unsafe_allow_html=True,
     )
 
+    # Check if transcript has been imported
+    has_transcript = _has_graded_courses(mahasiswa_id)
+
+    if not has_transcript:
+        st.warning(
+            "⚠️ Impor transkrip akademik terlebih dahulu sebelum mengimpor FRS. "
+            "Upload file transkrip PDF dari SIAKAD untuk memulai."
+        )
+
     # Pilih semester tujuan import
     semesters = _get_semesters(mahasiswa_id)
     sem_options = {
         semester_label(s["tahun_ajaran"], s["semester"]): s
         for s in semesters
     }
+
+    if not sem_options and not has_transcript:
+        st.info("Belum ada semester. Impor transkrip untuk membuat semester otomatis.")
+        _render_upload_zone(mahasiswa_id, semester_id=None, allow_frs=False)
+        return
 
     if not sem_options:
         st.warning("Belum ada semester. Buat semester terlebih dahulu di halaman Kalkulator.")
@@ -32,7 +46,37 @@ def render():
     target_semester = sem_options[selected_label]
     semester_id = target_semester["id"]
 
-    # Upload zone
+    _render_upload_zone(mahasiswa_id, semester_id=semester_id, allow_frs=has_transcript)
+
+    import_result = st.session_state.get("last_import_result")
+    if import_result:
+        berhasil = import_result.get("berhasil", 0)
+        gagal = import_result.get("gagal", 0)
+        st.markdown(
+            f"""
+            <div class="notif-success">
+                ✅ Berhasil mengimpor <b>{berhasil}</b> mata kuliah dari semester ini.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if gagal > 0:
+            detail_gagal = import_result.get("detail_gagal", [])
+            for item in detail_gagal:
+                st.markdown(
+                    f"""
+                    <div class="notif-warning">
+                        ⚠️ Baris {h(item.get('baris','-'))}: {h(item.get('alasan',''))}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+    _render_academic_history(mahasiswa_id)
+
+
+def _render_upload_zone(mahasiswa_id: str, semester_id, allow_frs: bool):
     st.markdown(
         """
         <div class="upload-zone">
@@ -54,7 +98,6 @@ def render():
     )
 
     if uploaded:
-        # Validasi ukuran
         content = uploaded.read()
         if len(content) > 10 * 1024 * 1024:
             st.error("Ukuran file melebihi 10 MB. Silakan kompres PDF terlebih dahulu.")
@@ -66,39 +109,22 @@ def render():
             unsafe_allow_html=True,
         )
 
+        if not allow_frs:
+            st.info("File ini akan diproses sebagai transkrip. Semester akan dibuat otomatis.")
+
         if st.button("📥 Import Sekarang", type="primary", key="btn_import"):
-            _do_import(semester_id, uploaded.name, content)
-
-    import_result = st.session_state.get("last_import_result")
-    if import_result:
-        berhasil = import_result.get("berhasil", 0)
-        gagal = import_result.get("gagal", 0)
-
-        st.markdown(
-            f"""
-            <div class="notif-success">
-                ✅ Berhasil mengimpor <b>{berhasil}</b> mata kuliah dari semester ini.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if gagal > 0:
-            detail_gagal = import_result.get("detail_gagal", [])
-            for item in detail_gagal:
-                st.markdown(
-                    f"""
-                    <div class="notif-warning">
-                        ⚠️ Baris {h(item.get('baris','-'))}: {h(item.get('alasan',''))}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-    # Academic History
-    _render_academic_history(mahasiswa_id)
+            target_id = semester_id
+            if target_id is None:
+                try:
+                    result = api_client.post(f"/mahasiswa/{mahasiswa_id}/semester", {
+                        "tahun_ajaran": "2024/2025",
+                        "semester": "GANJIL",
+                    })
+                    target_id = result.get("id")
+                except Exception:
+                    pass
+            if target_id:
+                _do_import(target_id, uploaded.name, content)
 
 
 def _do_import(semester_id: str, filename: str, content: bytes):
@@ -122,9 +148,23 @@ def _do_import(semester_id: str, filename: str, content: bytes):
         st.error(f"Koneksi ke backend gagal: {e}")
 
 
+def _has_graded_courses(mahasiswa_id: str) -> bool:
+    """Check if any graded courses exist — indicates transcript has been imported."""
+    try:
+        result = api_client.get(f"/mahasiswa/{mahasiswa_id}/ipk")
+        semesters = result.get("semester", []) if result else []
+        for sem in semesters:
+            mk_list = api_client.get(f"/semester/{sem['id']}/mata-kuliah")
+            data = mk_list.get("data", []) if mk_list else []
+            if any(mk.get("nilai_huruf") for mk in data):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _render_academic_history(mahasiswa_id: str):
     """Tampilkan riwayat akademik semua semester dengan accordion."""
-    # Ambil IPK
     try:
         ipk_data = api_client.get(f"/mahasiswa/{mahasiswa_id}/ipk")
     except Exception:
@@ -154,7 +194,6 @@ def _render_academic_history(mahasiswa_id: str):
         st.info("Belum ada data semester.")
         return
 
-    # Tampilkan dari semester terbaru
     for i, sem in enumerate(reversed(semesters)):
         sem_label = semester_label(sem.get("tahun_ajaran", ""), sem.get("semester", ""))
         ips = sem.get("ips")
@@ -168,7 +207,6 @@ def _render_academic_history(mahasiswa_id: str):
             f"Semester {num} — {sem_label}  |  IPS: {format_ipk(ips)}",
             expanded=is_current,
         ):
-            # Header card semester
             st.markdown(
                 f"""
                 <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;">
@@ -190,7 +228,6 @@ def _render_academic_history(mahasiswa_id: str):
                 unsafe_allow_html=True,
             )
 
-            # Tabel mata kuliah semester ini
             mk_list = _get_mk_semester(sem["id"])
             if mk_list:
                 rows = [

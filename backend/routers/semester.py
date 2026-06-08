@@ -67,6 +67,18 @@ async def import_frs(semester_id: int, file: UploadFile = File(...), db: Session
 
     is_transcript = "TRANSKRIP" in text.upper() or "TRANSCRIPT" in text.upper()
 
+    if not is_transcript:
+        # Block FRS if no transcript has been imported yet
+        has_transcript = db.query(MataKuliah).join(Semester).filter(
+            Semester.mahasiswa_id == sem.mahasiswa_id,
+            MataKuliah.nilai_huruf != None,
+        ).first()
+        if not has_transcript:
+            raise HTTPException(
+                status_code=400,
+                detail="Impor transkrip terlebih dahulu sebelum mengimpor FRS."
+            )
+
     if is_transcript:
         return _parse_transcript(text, sem.mahasiswa_id, db)
     else:
@@ -180,7 +192,6 @@ def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> d
         raise HTTPException(status_code=422, detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini.")
 
     db.commit()
-    _reorder_semesters(mahasiswa_id, db)
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
 
 
@@ -237,32 +248,7 @@ def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
             berhasil += 1
 
     db.commit()
-    _reorder_semesters(mahasiswa_id, db)
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
-
-def _reorder_semesters(mahasiswa_id: int, db: Session):
-    """
-    After import, re-derive tahun_ajaran for all semesters based on their
-    relative order, anchored to the earliest one. This fixes any ordering
-    inconsistencies caused by out-of-order imports.
-    """
-    sems = db.query(Semester).filter(
-        Semester.mahasiswa_id == mahasiswa_id
-    ).order_by(Semester.tahun_ajaran.asc(), Semester.semester.asc()).all()
-
-    if not sems:
-        return
-
-    # Use the anchor year from the first semester
-    anchor_year = int(sems[0].tahun_ajaran.split("/")[0])
-
-    for i, sem in enumerate(sems):
-        tahun_ajaran, jenis = _sem_num_to_tahun_ajaran(i + 1, anchor_year)
-        sem.tahun_ajaran = tahun_ajaran
-        sem.semester = jenis
-
-    db.commit()
-
 
 # --- Formatter ---
 

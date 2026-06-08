@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_current_user
-from backend.models import SemesterUpdate
+from dependencies import get_current_user
+from models import SemesterUpdate
 
-from backend.routers.mahasiswa import _fmt_semester
-from backend.routers.matakuliah import _get_semester_owned
+from routers.mahasiswa import _fmt_semester
+from routers.matakuliah import _get_semester_owned
 
 from database import Mahasiswa, get_db, Semester, MataKuliah, GRADE_POINTS, hitung_ips
 

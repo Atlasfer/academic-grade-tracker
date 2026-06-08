@@ -129,24 +129,27 @@ def _get_or_create_semester(mahasiswa_id: int, tahun_ajaran: str, jenis: str, db
 
 
 def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> dict:
-    """FRS format: NO  KODE  NAMA MK  SKS  KELAS"""
     pattern = re.compile(
         r"^\s*\d+\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+[A-Z]\s*$",
         re.MULTILINE
     )
 
-    # Extract NRP for entrance year
     nrp_match = re.search(r"\b(\d{10})\b", text)
     nrp = nrp_match.group(1) if nrp_match else None
 
-    # Extract semester header from FRS (e.g. "Genap 2025")
     sem_header = re.search(r"(Ganjil|Genap|Pendek)\s+(\d{4})", text, re.IGNORECASE)
     if sem_header:
-        jenis_raw, tahun_mulai = sem_header.groups()
+        jenis_raw, tahun_str = sem_header.groups()
         jenis = jenis_raw.upper()
-        tahun_mulai = int(tahun_mulai)
-        tahun_ajaran = f"{tahun_mulai}/{tahun_mulai + 1}"
-        entrance_year = _get_anchor_year(mahasiswa_id, db, fallback_nrp=nrp)
+        tahun = int(tahun_str)
+
+        # "Genap 2025" means 2nd semester of 2024/2025
+        # "Ganjil 2025" means 1st semester of 2025/2026
+        if jenis == "GENAP":
+            tahun_ajaran = f"{tahun - 1}/{tahun}"
+        else:  # GANJIL or PENDEK
+            tahun_ajaran = f"{tahun}/{tahun + 1}"
+
         target_sem = _get_or_create_semester(mahasiswa_id, tahun_ajaran, jenis, db)
         semester_id = target_sem.id
 

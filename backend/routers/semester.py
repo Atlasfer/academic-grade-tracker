@@ -1,14 +1,7 @@
 from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
 from sqlalchemy.orm import Session
-
+from database import get_db, Mahasiswa, Semester, MataKuliah, GRADE_POINTS, hitung_ips
 from dependencies import get_current_user
-from models import SemesterUpdate
-
-from routers.mahasiswa import _fmt_semester
-from routers.matakuliah import _get_semester_owned
-
-from database import Mahasiswa, get_db, Semester, MataKuliah, GRADE_POINTS, hitung_ips
-
 import pdfplumber
 import re
 import io
@@ -16,23 +9,27 @@ import io
 router = APIRouter(prefix="/api/v1", tags=["Semester"])
 
 
-# - main route
+# --- Routes ---
 
 @router.delete("/semester/{semester_id}")
-def delete_semester(semester_id: int, db: Session = Depends(get_db)):
-    sem = db.query(Semester).filter(Semester.id == semester_id).first()
-    if not sem:
-        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+def delete_semester(
+    semester_id: int,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    sem = _get_semester_owned(semester_id, current_user, db)
     db.delete(sem)
     db.commit()
     return {"detail": "Semester berhasil dihapus."}
 
 
 @router.get("/semester/{semester_id}/ips")
-def get_ips(semester_id: int, db: Session = Depends(get_db)):
-    sem = db.query(Semester).filter(Semester.id == semester_id).first()
-    if not sem:
-        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+def get_ips(
+    semester_id: int,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    sem = _get_semester_owned(semester_id, current_user, db)
     mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == semester_id).all()
     ips, total_sks = hitung_ips(mk_list)
     return {
@@ -43,16 +40,24 @@ def get_ips(semester_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/semester/{semester_id}/mata-kuliah")
-def get_matakuliah(semester_id: int, db: Session = Depends(get_db)):
+def get_matakuliah(
+    semester_id: int,
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    _get_semester_owned(semester_id, current_user, db)
     mk_list = db.query(MataKuliah).filter(MataKuliah.semester_id == semester_id).all()
     return {"data": [_fmt_mk(mk) for mk in mk_list]}
 
 
 @router.post("/semester/{semester_id}/import-frs")
-async def import_frs(semester_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    sem = db.query(Semester).filter(Semester.id == semester_id).first()
-    if not sem:
-        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+async def import_frs(
+    semester_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Mahasiswa = Depends(get_current_user),
+):
+    sem = _get_semester_owned(semester_id, current_user, db)
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File harus berformat PDF.")
 
@@ -84,63 +89,11 @@ async def import_frs(semester_id: int, file: UploadFile = File(...), db: Session
     else:
         return _parse_frs(text, semester_id, sem.mahasiswa_id, db)
 
-@router.put("/semester/{semester_id}")
-def update_semester(
-    semester_id: int,
-    body: SemesterUpdate,
-    db: Session = Depends(get_db),
-    current_user: Mahasiswa = Depends(get_current_user),
-):
-    sem = _get_semester_owned(semester_id, current_user, db)
-    sem.tahun_ajaran = body.tahun_ajaran
-    sem.semester = body.semester
-    db.commit()
-    db.refresh(sem) 
-    return _fmt_semester(sem)
 
-
-# --- utils
-
-def _get_anchor_year(mahasiswa_id: int, db: Session, fallback_nrp: str = None) -> int:
-    """
-    Always prefer NRP for entrance year — it's the most reliable source.
-    Fall back to earliest existing semester only if NRP is unavailable.
-    """
-    if fallback_nrp and len(fallback_nrp) >= 8:
-        return 2000 + int(fallback_nrp[4:6])
-
-    existing = db.query(Semester).filter(
-        Semester.mahasiswa_id == mahasiswa_id
-    ).order_by(Semester.tahun_ajaran.asc()).first()
-
-    if existing:
-        return int(existing.tahun_ajaran.split("/")[0])
-
-    return 2024
-
-def _sem_num_to_tahun_ajaran(sem_num: int, entrance_year: int) -> tuple[str, str]:
-    """Convert semester number (1-based) to tahun_ajaran and jenis."""
-    year_offset = (sem_num - 1) // 2
-    tahun_mulai = entrance_year + year_offset
-    jenis = "GANJIL" if sem_num % 2 == 1 else "GENAP"
-    return f"{tahun_mulai}/{tahun_mulai + 1}", jenis
-
-
-def _get_or_create_semester(mahasiswa_id: int, tahun_ajaran: str, jenis: str, db: Session) -> Semester:
-    """Fetch existing semester or create it."""
-    sem = db.query(Semester).filter(
-        Semester.mahasiswa_id == mahasiswa_id,
-        Semester.tahun_ajaran == tahun_ajaran,
-        Semester.semester == jenis,
-    ).first()
-    if not sem:
-        sem = Semester(mahasiswa_id=mahasiswa_id, tahun_ajaran=tahun_ajaran, semester=jenis)
-        db.add(sem)
-        db.flush()
-    return sem
-
+# --- PDF Parsers ---
 
 def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> dict:
+    """FRS format: NO  KODE  NAMA MK  SKS  KELAS"""
     pattern = re.compile(
         r"^\s*\d+\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+[A-Z]\s*$",
         re.MULTILINE
@@ -155,12 +108,30 @@ def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> d
         jenis = jenis_raw.upper()
         tahun = int(tahun_str)
 
-        # "Genap 2025" means 2nd semester of 2024/2025
-        # "Ganjil 2025" means 1st semester of 2025/2026
+        # "Genap 2025" = second half of 2024/2025
+        # "Ganjil 2025" = first half of 2025/2026
         if jenis == "GENAP":
             tahun_ajaran = f"{tahun - 1}/{tahun}"
-        else:  # GANJIL or PENDEK
+        else:
             tahun_ajaran = f"{tahun}/{tahun + 1}"
+
+        # Block if existing semester already has graded courses
+        existing = db.query(Semester).filter(
+            Semester.mahasiswa_id == mahasiswa_id,
+            Semester.tahun_ajaran == tahun_ajaran,
+            Semester.semester == jenis,
+        ).first()
+        if existing:
+            has_grades = db.query(MataKuliah).filter(
+                MataKuliah.semester_id == existing.id,
+                MataKuliah.nilai_huruf != None,
+            ).first()
+            if has_grades:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Semester {jenis} {tahun_ajaran} sudah memiliki nilai dari transkrip. "
+                           f"FRS tidak dapat digabung dengan semester yang sudah dinilai."
+                )
 
         target_sem = _get_or_create_semester(mahasiswa_id, tahun_ajaran, jenis, db)
         semester_id = target_sem.id
@@ -198,25 +169,24 @@ def _parse_frs(text: str, semester_id: int, mahasiswa_id: int, db: Session) -> d
 def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
     """Transcript format: NO  KODE  NAMA MK  SEM  SKS  NILAI"""
     pattern = re.compile(
-    r"^\s*(\d+)\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+(\d+)\s+(A|AB|B|BC|C|D|E)(?:\s|$)",
-    re.MULTILINE
+        r"^\s*(\d+)\s+([A-Z]{2}\d{6})\s+(.+?)\s+(\d+)\s+(\d+)\s+(A|AB|B|BC|C|D|E)(?:\s|$)",
+        re.MULTILINE
     )
-    # Extract NRP for entrance year
+
     nrp_match = re.search(r"\b(\d{10})\b", text)
     nrp = nrp_match.group(1) if nrp_match else None
     entrance_year = _get_anchor_year(mahasiswa_id, db, fallback_nrp=nrp)
 
-    # Group courses by semester number
     sem_map: dict[int, list] = {}
     for i, match in enumerate(pattern.finditer(text), start=1):
-        _, kode, nama, sem_num, sks, nilai = match.groups()  # note the leading _ for row number
+        _, kode, nama, sem_num, sks, nilai = match.groups()
         sem_map.setdefault(int(sem_num), []).append({
             "kode": kode,
             "nama": nama.strip(),
             "sks": int(sks),
             "nilai": nilai,
             "baris": i,
-    })
+        })
 
     if not sem_map:
         raise HTTPException(status_code=422, detail="Tidak ada data mata kuliah yang dapat dikenali dari PDF ini.")
@@ -249,6 +219,49 @@ def _parse_transcript(text: str, mahasiswa_id: int, db: Session) -> dict:
 
     db.commit()
     return {"berhasil": berhasil, "gagal": gagal, "detail_gagal": detail_gagal}
+
+
+# --- Semester Helpers ---
+
+def _get_anchor_year(mahasiswa_id: int, db: Session, fallback_nrp: str = None) -> int:
+    existing = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id
+    ).order_by(Semester.tahun_ajaran.asc()).first()
+    if existing:
+        return int(existing.tahun_ajaran.split("/")[0])
+    if fallback_nrp and len(fallback_nrp) >= 8:
+        return 2000 + int(fallback_nrp[4:6])
+    return 2024
+
+
+def _sem_num_to_tahun_ajaran(sem_num: int, entrance_year: int) -> tuple[str, str]:
+    year_offset = (sem_num - 1) // 2
+    tahun_mulai = entrance_year + year_offset
+    jenis = "GANJIL" if sem_num % 2 == 1 else "GENAP"
+    return f"{tahun_mulai}/{tahun_mulai + 1}", jenis
+
+
+def _get_or_create_semester(mahasiswa_id: int, tahun_ajaran: str, jenis: str, db: Session) -> Semester:
+    sem = db.query(Semester).filter(
+        Semester.mahasiswa_id == mahasiswa_id,
+        Semester.tahun_ajaran == tahun_ajaran,
+        Semester.semester == jenis,
+    ).first()
+    if not sem:
+        sem = Semester(mahasiswa_id=mahasiswa_id, tahun_ajaran=tahun_ajaran, semester=jenis)
+        db.add(sem)
+        db.flush()
+    return sem
+
+
+def _get_semester_owned(semester_id: int, current_user: Mahasiswa, db: Session) -> Semester:
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
+        raise HTTPException(status_code=404, detail="Semester tidak ditemukan.")
+    if sem.mahasiswa_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Akses ditolak.")
+    return sem
+
 
 # --- Formatter ---
 
